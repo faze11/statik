@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"github.com/fsnotify/fsnotify"
 )
 
 const (
@@ -41,6 +42,7 @@ var (
 	flagNoMtime    = flag.Bool("m", false, "Ignore modification times on files.")
 	flagNoCompress = flag.Bool("Z", false, "Do not use compression to shrink the files.")
 	flagForce      = flag.Bool("f", false, "Overwrite destination file if it already exists.")
+	flagWatch      = flag.Bool("w", false, "Watch filesystem for changes.")
 )
 
 // mtimeDate holds the arbitrary mtime that we assign to files when
@@ -50,6 +52,67 @@ var mtimeDate = time.Date(2000, time.January, 1, 0, 0, 0, 0, time.UTC)
 func main() {
 	flag.Parse()
 
+	run()
+
+	if *flagWatch {
+		println("Watching directory for changes:", *flagSrc)
+		watchFiles()
+	}
+}
+
+func watchFiles() {
+
+	var dirs []string
+	filepath.Walk(*flagSrc, func(path string, fi os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if fi.IsDir() {
+			dirs = append(dirs, path)
+			return nil
+		}
+		return nil
+	})
+
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		exitWithError(err)
+	}
+	defer watcher.Close()
+
+	done := make(chan bool)
+	go func() {
+		for {
+			select {
+			case event := <-watcher.Events:
+				if event.Op == fsnotify.Write || event.Op == fsnotify.Create {
+					if strings.Contains(event.Name, "_jb_old") || strings.Contains(event.Name, "jb_tmp") {
+						continue
+					}
+					println(event.String())
+					start := time.Now()
+					run()
+					elapsed := time.Since(start)
+					fmt.Printf("Finished compiling assets (%s)\n", elapsed)
+				}
+
+			case err := <-watcher.Errors:
+				println("error:", err)
+			}
+		}
+	}()
+
+	//err = watcher.Add("/Users/faze/go/src/git.faze.center/faze/go-ig-post-liker/" + *flagSrc)
+	for _, dir := range dirs {
+		err := watcher.Add(dir)
+		if err != nil {
+			exitWithError(err)
+		}
+	}
+	<-done
+}
+
+func run() {
 	file, err := generateSource(*flagSrc)
 	if err != nil {
 		exitWithError(err)
